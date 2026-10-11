@@ -34,5 +34,6 @@ models:
 vars:
   run_date:          "{{ modules.datetime.date.today() }}"
   ref_date:          "2019-12-01"
+  churn_as_of:       "2019-11-01"   # cutoff; must leave churn_window_days of data after it
   churn_window_days: 30
   min_purchase_price: 0.01
