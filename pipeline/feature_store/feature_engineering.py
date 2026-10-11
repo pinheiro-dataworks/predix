@@ -74,19 +74,28 @@ def build_rfm(df: pd.DataFrame) -> pd.DataFrame:
     )
     rfm = rfm[rfm["monetary"] > 0]
 
-    for col, labels, _ in [
-        ("recency",   [5, 4, 3, 2, 1], True),
-        ("frequency", [1, 2, 3, 4, 5], False),
-        ("monetary",  [1, 2, 3, 4, 5], False),
-    ]:
-        rfm[f"{col[0]}_score"] = pd.qcut(
-            rfm[col], q=5, labels=labels, duplicates="drop"
-        ).astype(int)
+    rfm["r_score"] = score_quantiles(rfm["recency"], ascending=False)
+    rfm["f_score"] = score_quantiles(rfm["frequency"])
+    rfm["m_score"] = score_quantiles(rfm["monetary"])
 
     rfm["rfm_score"] = rfm["r_score"] + rfm["f_score"] + rfm["m_score"]
     rfm["segment"]   = rfm.apply(_classify_segment, axis=1)
     log.info("RFM built: %d users | segments: %s", len(rfm), rfm["segment"].value_counts().to_dict())
     return rfm
+
+
+def score_quantiles(series: pd.Series, q: int = 5, ascending: bool = True) -> pd.Series:
+    """Integer score 1..q from the percentile rank of each value.
+
+    `pd.qcut(..., duplicates="drop")` cannot be used here: most buyers have a
+    single purchase, so frequency quantile edges collapse and the label count
+    no longer matches the bin count. Average ranks give tied values the same
+    score instead. `ascending=False` gives the highest score to the lowest
+    values (used for recency, where fewer days is better).
+    """
+    pct = series.rank(pct=True, method="average")
+    score = np.ceil(pct * q).clip(1, q).astype(int)
+    return score if ascending else (q + 1) - score
 
 
 def _classify_segment(row: pd.Series) -> str:
