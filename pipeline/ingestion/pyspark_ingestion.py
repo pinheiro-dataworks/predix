@@ -19,8 +19,6 @@ from __future__ import annotations
 import argparse
 import logging
 from datetime import datetime
-from pathlib import Path
-from typing import Optional
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
@@ -58,7 +56,10 @@ def build_spark(app_name: str = "predix_ingestion", env: str = "dev") -> SparkSe
         builder = (
             builder
             .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-            .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+            .config(
+                "spark.sql.catalog.spark_catalog",
+                "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+            )
         )
     return builder.getOrCreate()
 
@@ -97,7 +98,7 @@ def run_dq_checks(df: DataFrame) -> tuple[DataFrame, dict]:
 
 
 # ── Transform ─────────────────────────────────────────────────────────────────
-def transform_bronze(df: DataFrame, month: Optional[str] = None) -> DataFrame:
+def transform_bronze(df: DataFrame, month: str | None = None) -> DataFrame:
     return (
         df
         # Parse timestamp (UTC)
@@ -112,7 +113,11 @@ def transform_bronze(df: DataFrame, month: Optional[str] = None) -> DataFrame:
         # Null guard for user_id
         .filter(F.col("user_id").isNotNull())
         # Clean price (cap at 99th percentile or mark as 0 if null)
-        .withColumn("price", F.when(F.col("price").isNull() | (F.col("price") < 0), F.lit(0.0)).otherwise(F.col("price")))
+        .withColumn(
+            "price",
+            F.when(F.col("price").isNull() | (F.col("price") < 0), F.lit(0.0))
+            .otherwise(F.col("price")),
+        )
         # Derive category_root and sub_category
         .withColumn("category_root", F.split(F.col("category_code"), r"\.").getItem(0))
         .withColumn("category_sub",  F.split(F.col("category_code"), r"\.").getItem(1))
@@ -144,7 +149,7 @@ def write_bronze(df: DataFrame, output_path: str, env: str = "dev") -> None:
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-def run(input_path: str, output_path: str, env: str = "dev", month: Optional[str] = None) -> dict:
+def run(input_path: str, output_path: str, env: str = "dev", month: str | None = None) -> dict:
     spark = build_spark(env=env)
     spark.sparkContext.setLogLevel("WARN")
 

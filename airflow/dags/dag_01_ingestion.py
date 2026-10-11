@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
-from airflow.operators.python import PythonOperator, BranchPythonOperator
+from airflow.operators.python import PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
 
 DEFAULT_ARGS = {
@@ -74,13 +74,17 @@ with DAG(
               --env    {{ var.value.predix_env }} \
               --month  {{ ds[:7] }}
         """,
-        doc_md = "Runs PySpark ingestion job: CSV → cleaned Bronze Parquet, partitioned by event_date.",
+        doc_md = (
+            "Runs PySpark ingestion job: CSV → cleaned Bronze Parquet, "
+            "partitioned by event_date."
+        ),
     )
 
     # ── Task 3: DQ report ──────────────────────────────────────────────────
     def run_dq_checks(**context):
+        import json
+        import logging
         from pathlib import Path
-        import json, logging
         log = logging.getLogger(__name__)
 
         bronze_path = context["var"]["value"].get("predix_bronze_path", "/tmp/bronze")

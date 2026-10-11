@@ -55,8 +55,10 @@ with DAG(
 
     # ── Task 1: Load & validate features ─────────────────────────────────
     def load_and_validate(**context):
+        import logging
         from pathlib import Path
-        import pandas as pd, logging
+
+        import pandas as pd
         log  = logging.getLogger(__name__)
         root = Path(context["var"]["value"].get("predix_home", "."))
 

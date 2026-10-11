@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import sys
 import warnings
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -224,13 +224,20 @@ rfm = add_rfm_scores(rfm)
 
 def classify_segment(row) -> str:
     r, f = row["r_score"], row["f_score"]
-    if r >= 4 and f >= 4:  return "Champions"
-    if r >= 3 and f >= 3:  return "Loyal"
-    if r >= 3 and f <= 2:  return "Potential Loyalist"
-    if r == 2 and f >= 3:  return "At Risk"
-    if r == 2 and f == 2:  return "Needs Attention"
-    if r == 1 and f >= 3:  return "Can't Lose"
-    if r == 1 and f == 2:  return "Hibernating"
+    if r >= 4 and f >= 4:
+        return "Champions"
+    if r >= 3 and f >= 3:
+        return "Loyal"
+    if r >= 3 and f <= 2:
+        return "Potential Loyalist"
+    if r == 2 and f >= 3:
+        return "At Risk"
+    if r == 2 and f == 2:
+        return "Needs Attention"
+    if r == 1 and f >= 3:
+        return "Can't Lose"
+    if r == 1 and f == 2:
+        return "Hibernating"
     return "Lost"
 
 
@@ -328,7 +335,10 @@ def build_products(data: pd.DataFrame) -> dict:
         "by_category":  by_cat,
     }
 
-    top_cats = pur.groupby("category")["price"].sum().sort_values(ascending=False).head(8).index.tolist()
+    top_cats = (
+        pur.groupby("category")["price"].sum()
+        .sort_values(ascending=False).head(8).index.tolist()
+    )
     cv = viw[viw["category"].isin(top_cats)].groupby("category").size()
     cc = crt[crt["category"].isin(top_cats)].groupby("category").size()
     cp = pur[pur["category"].isin(top_cats)].groupby("category").size()
@@ -597,7 +607,7 @@ print(">> Saving dashboard_data.json...")
 
 dashboard_data = {
     "metadata": {
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "sample":       "user-level sample (scripts/build_sample.py)",
         "total_events": total_rows,
         "total_users":  si(total_users),

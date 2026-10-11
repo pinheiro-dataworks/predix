@@ -95,7 +95,8 @@ with DAG(
 
     # ── Task 4: Build Python features ──────────────────────────────────────
     def build_python_features(**context):
-        import sys, logging
+        import logging
+        import sys
         from pathlib import Path
 
         log = logging.getLogger(__name__)
@@ -129,8 +130,10 @@ with DAG(
 
     # ── Task 5: Validate ───────────────────────────────────────────────────
     def validate_features(**context):
+        import logging
         from pathlib import Path
-        import pandas as pd, logging
+
+        import pandas as pd
         log = logging.getLogger(__name__)
 
         root    = Path(context["var"]["value"].get("predix_home", "."))

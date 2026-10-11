@@ -36,12 +36,12 @@ def load_champion(model_name: str, stage: str = "Production") -> object:
     model_uri = f"models:/{model_name}/{stage}"
     try:
         return mlflow.sklearn.load_model(model_uri)
-    except Exception:
-        log.warning("Model '%s' not in registry. Loading from local mlruns…", model_name)
+    except Exception as err:
+        log.warning("Model '%s' not in registry (%s). Loading latest version…", model_name, err)
         client = mlflow.tracking.MlflowClient()
         versions = client.get_latest_versions(model_name)
         if not versions:
-            raise RuntimeError(f"No versions found for model '{model_name}'")
+            raise RuntimeError(f"No versions found for model '{model_name}'") from err
         run_id  = versions[-1].run_id
         return mlflow.sklearn.load_model(f"runs:/{run_id}/model")
 

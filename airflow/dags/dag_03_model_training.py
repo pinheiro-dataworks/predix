@@ -15,10 +15,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.operators.bash import BashOperator
+from airflow.operators.python import BranchPythonOperator, PythonOperator
 from airflow.sensors.external_task import ExternalTaskSensor
-from airflow.utils.trigger_rule import TriggerRule
 
 DEFAULT_ARGS = {
     "owner":            "predix-data-science",
@@ -72,8 +71,10 @@ with DAG(
 
     # ── Task 1: Train churn model ───────────────────────────────────────────
     def train_churn(**context):
-        import sys, logging
+        import logging
+        import sys
         from pathlib import Path
+
         import mlflow
 
         log  = logging.getLogger(__name__)
@@ -82,9 +83,8 @@ with DAG(
 
         mlflow.set_tracking_uri(context["var"]["value"].get("mlflow_uri", str(root / "mlruns")))
 
-        from pipeline.models.churn_model import ChurnModel, ChurnModelConfig
-
         from pipeline.feature_store.feature_engineering import load_events
+        from pipeline.models.churn_model import ChurnModel
 
         events = load_events(_events_path(context, root))
         feat   = ChurnModel.build_features(events, **_churn_window(context))
@@ -104,8 +104,10 @@ with DAG(
 
     # ── Task 2: Train upsell model ─────────────────────────────────────────
     def train_upsell(**context):
-        import sys, logging
+        import logging
+        import sys
         from pathlib import Path
+
         import mlflow
 
         log  = logging.getLogger(__name__)
@@ -114,10 +116,8 @@ with DAG(
 
         mlflow.set_tracking_uri(context["var"]["value"].get("mlflow_uri", str(root / "mlruns")))
 
-        from pipeline.feature_store.feature_engineering import build_rfm
+        from pipeline.feature_store.feature_engineering import build_rfm, load_events
         from pipeline.models.upsell_model import UpsellModel
-
-        from pipeline.feature_store.feature_engineering import load_events
 
         df = load_events(_events_path(context, root))
 
@@ -146,8 +146,10 @@ with DAG(
 
     # ── Task 4a: Register champion ─────────────────────────────────────────
     def register(**context):
-        import sys, logging
+        import logging
+        import sys
         from pathlib import Path
+
         import mlflow
 
         log  = logging.getLogger(__name__)
@@ -156,9 +158,8 @@ with DAG(
 
         mlflow.set_tracking_uri(context["var"]["value"].get("mlflow_uri", str(root / "mlruns")))
 
-        from pipeline.models.churn_model import ChurnModel
-
         from pipeline.feature_store.feature_engineering import load_events
+        from pipeline.models.churn_model import ChurnModel
 
         events = load_events(_events_path(context, root))
         feat   = ChurnModel.build_features(events, **_churn_window(context))

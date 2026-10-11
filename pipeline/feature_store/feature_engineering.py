@@ -80,7 +80,10 @@ def build_rfm(df: pd.DataFrame) -> pd.DataFrame:
 
     rfm["rfm_score"] = rfm["r_score"] + rfm["f_score"] + rfm["m_score"]
     rfm["segment"]   = rfm.apply(_classify_segment, axis=1)
-    log.info("RFM built: %d users | segments: %s", len(rfm), rfm["segment"].value_counts().to_dict())
+    log.info(
+        "RFM built: %d users | segments: %s",
+        len(rfm), rfm["segment"].value_counts().to_dict(),
+    )
     return rfm
 
 
@@ -100,13 +103,20 @@ def score_quantiles(series: pd.Series, q: int = 5, ascending: bool = True) -> pd
 
 def _classify_segment(row: pd.Series) -> str:
     r, f = int(row["r_score"]), int(row["f_score"])
-    if r >= 4 and f >= 4:  return "Champions"
-    if r >= 3 and f >= 3:  return "Loyal"
-    if r >= 3 and f <= 2:  return "Potential Loyalist"
-    if r == 2 and f >= 3:  return "At Risk"
-    if r == 2 and f == 2:  return "Needs Attention"
-    if r == 1 and f >= 3:  return "Can't Lose"
-    if r == 1 and f == 2:  return "Hibernating"
+    if r >= 4 and f >= 4:
+        return "Champions"
+    if r >= 3 and f >= 3:
+        return "Loyal"
+    if r >= 3 and f <= 2:
+        return "Potential Loyalist"
+    if r == 2 and f >= 3:
+        return "At Risk"
+    if r == 2 and f == 2:
+        return "Needs Attention"
+    if r == 1 and f >= 3:
+        return "Can't Lose"
+    if r == 1 and f == 2:
+        return "Hibernating"
     return "Lost"
 
 
@@ -131,8 +141,10 @@ def build_user_features(df: pd.DataFrame) -> pd.DataFrame:
         )
         .reset_index()
     )
-    base = base.merge(viw.groupby("user_id").size().rename("total_views"),  on="user_id", how="left")
-    base = base.merge(crt.groupby("user_id").size().rename("total_carts"),  on="user_id", how="left")
+    views = viw.groupby("user_id").size().rename("total_views")
+    carts = crt.groupby("user_id").size().rename("total_carts")
+    base = base.merge(views, on="user_id", how="left")
+    base = base.merge(carts, on="user_id", how="left")
     base = base.fillna(0)
 
     base["recency_days"]       = (REF_DATE - base["last_purchase_dt"]).dt.days.astype(int)
@@ -159,8 +171,10 @@ def build_product_features(df: pd.DataFrame) -> pd.DataFrame:
         )
         .reset_index()
     )
-    prod = prod.merge(viw.groupby("product_id").size().rename("total_views"),  on="product_id", how="left")
-    prod = prod.merge(crt.groupby("product_id").size().rename("total_carts"),  on="product_id", how="left")
+    views = viw.groupby("product_id").size().rename("total_views")
+    carts = crt.groupby("product_id").size().rename("total_carts")
+    prod = prod.merge(views, on="product_id", how="left")
+    prod = prod.merge(carts, on="product_id", how="left")
     prod = prod.fillna(0)
     prod["conversion_rate"] = prod["total_purchases"] / prod["total_views"].replace(0, np.nan)
     prod = prod.fillna(0)

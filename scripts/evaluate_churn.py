@@ -28,6 +28,10 @@ from pipeline.feature_store.feature_engineering import prepare_events  # noqa: E
 from pipeline.models.churn_evaluation import evaluate_churn_models, results_table  # noqa: E402
 
 
+def _round(value: float | None) -> float | None:
+    return None if value is None else round(value, 4)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate churn models on the local sample.")
     parser.add_argument("--events", type=Path, default=ROOT / "dataset" / "sample_events.parquet")
@@ -68,8 +72,8 @@ def main() -> None:
                 "model": r.name,
                 "roc_auc": round(r.roc_auc, 4),
                 "pr_auc": round(r.pr_auc, 4),
-                "cv_roc_auc_mean": None if r.cv_roc_auc_mean is None else round(r.cv_roc_auc_mean, 4),
-                "cv_roc_auc_std": None if r.cv_roc_auc_std is None else round(r.cv_roc_auc_std, 4),
+                "cv_roc_auc_mean": _round(r.cv_roc_auc_mean),
+                "cv_roc_auc_std": _round(r.cv_roc_auc_std),
             }
             for r in results
         ],
