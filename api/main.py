@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -36,21 +38,6 @@ SCORES_DIR   = ROOT / "pipeline" / "scoring" / "output"
 SCORING_DIR  = ROOT / "pipeline" / "scoring"
 API_TOKEN    = os.getenv("PREDIX_API_TOKEN", "predix-dev-token")
 
-app = FastAPI(
-    title       = "Predix Intelligence API",
-    description = "Churn prediction & upsell scoring for e-commerce",
-    version     = "1.0.0",
-    docs_url    = "/docs",
-    redoc_url   = "/redoc",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins  = ["*"],
-    allow_methods  = ["*"],
-    allow_headers  = ["*"],
-)
-
 # ── In-memory score store ─────────────────────────────────────────────────────
 _store: dict[str, pd.DataFrame] = {}
 
@@ -65,13 +52,31 @@ def _load_scores() -> None:
             _store[name] = pd.read_parquet(path)
             log.info("Loaded %s: %d rows.", name, len(_store[name]))
         else:
-            log.warning("Score file not found: %s (run generate_dashboard_data.py)", path)
+            log.warning("Score file not found: %s (run train_and_register.py)", path)
             _store[name] = pd.DataFrame()
 
 
-@app.on_event("startup")
-async def startup_event() -> None:
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     _load_scores()
+    yield
+
+
+app = FastAPI(
+    title       = "Predix Intelligence API",
+    description = "Churn prediction & upsell scoring for e-commerce",
+    version     = "1.0.0",
+    docs_url    = "/docs",
+    redoc_url   = "/redoc",
+    lifespan    = lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins  = ["*"],
+    allow_methods  = ["*"],
+    allow_headers  = ["*"],
+)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
