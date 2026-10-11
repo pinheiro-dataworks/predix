@@ -9,6 +9,7 @@ Entities: user, product, session.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -17,6 +18,43 @@ log = logging.getLogger(__name__)
 
 REF_DATE = pd.Timestamp("2019-12-01", tz="UTC")
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+# ── Event cleaning ─────────────────────────────────────────────────────────────
+def prepare_events(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalise raw events: UTC timestamps, numeric price, filled brand/category.
+
+    `category` is the top level of `category_code` ("electronics.smartphone"
+    → "electronics"); events without a code fall into "unknown".
+    """
+    out = df.copy()
+    out["event_time"] = _parse_event_time(out["event_time"])
+    out["price"] = pd.to_numeric(out["price"], errors="coerce").fillna(0.0)
+    out["brand"] = out["brand"].fillna("unknown")
+    out["category_code"] = out["category_code"].fillna("")
+    out["category"] = out["category_code"].str.split(".").str[0].replace("", "unknown")
+    return out
+
+
+def load_events(path: str | Path) -> pd.DataFrame:
+    """Read the event sample written by scripts/build_sample.py and prepare it."""
+    return prepare_events(pd.read_parquet(path))
+
+
+def _parse_event_time(col: pd.Series) -> pd.Series:
+    """Parse event timestamps as UTC.
+
+    Raw files store "2019-10-01 00:00:00 UTC". Parsing the fixed-width prefix
+    with an explicit format is ~15x faster than letting pandas infer the
+    timezone suffix, which matters on millions of rows.
+    """
+    if pd.api.types.is_datetime64_any_dtype(col):
+        return col.dt.tz_localize("UTC") if col.dt.tz is None else col.dt.tz_convert("UTC")
+    as_str = col.astype(str)
+    if as_str.str.endswith(" UTC").all():
+        parsed = pd.to_datetime(as_str.str.slice(0, 19), format="%Y-%m-%d %H:%M:%S")
+        return parsed.dt.tz_localize("UTC")
+    return pd.to_datetime(as_str, utc=True)
 
 
 # ── RFM ───────────────────────────────────────────────────────────────────────
@@ -36,19 +74,28 @@ def build_rfm(df: pd.DataFrame) -> pd.DataFrame:
     )
     rfm = rfm[rfm["monetary"] > 0]
 
-    for col, labels, _ in [
-        ("recency",   [5, 4, 3, 2, 1], True),
-        ("frequency", [1, 2, 3, 4, 5], False),
-        ("monetary",  [1, 2, 3, 4, 5], False),
-    ]:
-        rfm[f"{col[0]}_score"] = pd.qcut(
-            rfm[col], q=5, labels=labels, duplicates="drop"
-        ).astype(int)
+    rfm["r_score"] = score_quantiles(rfm["recency"], ascending=False)
+    rfm["f_score"] = score_quantiles(rfm["frequency"])
+    rfm["m_score"] = score_quantiles(rfm["monetary"])
 
     rfm["rfm_score"] = rfm["r_score"] + rfm["f_score"] + rfm["m_score"]
     rfm["segment"]   = rfm.apply(_classify_segment, axis=1)
     log.info("RFM built: %d users | segments: %s", len(rfm), rfm["segment"].value_counts().to_dict())
     return rfm
+
+
+def score_quantiles(series: pd.Series, q: int = 5, ascending: bool = True) -> pd.Series:
+    """Integer score 1..q from the percentile rank of each value.
+
+    `pd.qcut(..., duplicates="drop")` cannot be used here: most buyers have a
+    single purchase, so frequency quantile edges collapse and the label count
+    no longer matches the bin count. Average ranks give tied values the same
+    score instead. `ascending=False` gives the highest score to the lowest
+    values (used for recency, where fewer days is better).
+    """
+    pct = series.rank(pct=True, method="average")
+    score = np.ceil(pct * q).clip(1, q).astype(int)
+    return score if ascending else (q + 1) - score
 
 
 def _classify_segment(row: pd.Series) -> str:

@@ -31,6 +31,22 @@ DEFAULT_ARGS = {
 
 MIN_AUC_THRESHOLD = 0.60  # gate: do not promote model below this AUC
 
+
+def _events_path(context, root):
+    """Event sample location; override with the `predix_events_path` Variable."""
+    default = root / "dataset" / "sample_events.parquet"
+    return context["var"]["value"].get("predix_events_path", str(default))
+
+
+def _churn_window(context):
+    """Churn cutoff and horizon from Airflow Variables (see churn_dataset.py)."""
+    variables = context["var"]["value"]
+    return {
+        "as_of":        variables.get("churn_as_of", "2019-11-01"),
+        "horizon_days": int(variables.get("churn_horizon_days", 30)),
+    }
+
+
 with DAG(
     dag_id            = "dag_03_model_training",
     description       = "Predix — Weekly model training and MLflow registration",
@@ -58,7 +74,6 @@ with DAG(
     def train_churn(**context):
         import sys, logging
         from pathlib import Path
-        import pandas as pd
         import mlflow
 
         log  = logging.getLogger(__name__)
@@ -69,15 +84,10 @@ with DAG(
 
         from pipeline.models.churn_model import ChurnModel, ChurnModelConfig
 
-        oct_df = pd.read_csv(root / "dataset" / "2019-Oct.csv", nrows=2_000_000)
-        nov_df = pd.read_csv(root / "dataset" / "2019-Nov.csv", nrows=2_000_000)
-        for df in [oct_df, nov_df]:
-            df["event_time"]    = pd.to_datetime(df["event_time"], utc=True)
-            df["price"]         = pd.to_numeric(df["price"], errors="coerce").fillna(0)
-            df["brand"]         = df["brand"].fillna("unknown")
-            df["category_code"] = df["category_code"].fillna("")
+        from pipeline.feature_store.feature_engineering import load_events
 
-        feat  = ChurnModel.build_features(oct_df, nov_df)
+        events = load_events(_events_path(context, root))
+        feat   = ChurnModel.build_features(events, **_churn_window(context))
         model = ChurnModel()
         model.fit(feat)
         summary = model.summary()
@@ -96,7 +106,6 @@ with DAG(
     def train_upsell(**context):
         import sys, logging
         from pathlib import Path
-        import pandas as pd
         import mlflow
 
         log  = logging.getLogger(__name__)
@@ -108,14 +117,9 @@ with DAG(
         from pipeline.feature_store.feature_engineering import build_rfm
         from pipeline.models.upsell_model import UpsellModel
 
-        oct_df = pd.read_csv(root / "dataset" / "2019-Oct.csv", nrows=2_000_000)
-        nov_df = pd.read_csv(root / "dataset" / "2019-Nov.csv", nrows=2_000_000)
-        df     = pd.concat([oct_df, nov_df], ignore_index=True)
-        df["event_time"]    = pd.to_datetime(df["event_time"], utc=True)
-        df["price"]         = pd.to_numeric(df["price"], errors="coerce").fillna(0)
-        df["brand"]         = df["brand"].fillna("unknown")
-        df["category_code"] = df["category_code"].fillna("")
-        df["category"]      = df["category_code"].str.split(".").str[0].replace("", "unknown")
+        from pipeline.feature_store.feature_engineering import load_events
+
+        df = load_events(_events_path(context, root))
 
         rfm   = build_rfm(df)
         model = UpsellModel()
@@ -144,7 +148,6 @@ with DAG(
     def register(**context):
         import sys, logging
         from pathlib import Path
-        import pandas as pd
         import mlflow
 
         log  = logging.getLogger(__name__)
@@ -155,15 +158,10 @@ with DAG(
 
         from pipeline.models.churn_model import ChurnModel
 
-        oct_df = pd.read_csv(root / "dataset" / "2019-Oct.csv", nrows=2_000_000)
-        nov_df = pd.read_csv(root / "dataset" / "2019-Nov.csv", nrows=2_000_000)
-        for df in [oct_df, nov_df]:
-            df["event_time"]    = pd.to_datetime(df["event_time"], utc=True)
-            df["price"]         = pd.to_numeric(df["price"], errors="coerce").fillna(0)
-            df["brand"]         = df["brand"].fillna("unknown")
-            df["category_code"] = df["category_code"].fillna("")
+        from pipeline.feature_store.feature_engineering import load_events
 
-        feat  = ChurnModel.build_features(oct_df, nov_df)
+        events = load_events(_events_path(context, root))
+        feat   = ChurnModel.build_features(events, **_churn_window(context))
         model = ChurnModel()
         model.fit(feat)
         run_id = model.register_champion()

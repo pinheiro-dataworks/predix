@@ -28,6 +28,13 @@ DEFAULT_ARGS = {
     "execution_timeout": timedelta(hours=1, minutes=30),
 }
 
+
+def _events_path(context, root):
+    """Event sample location; override with the `predix_events_path` Variable."""
+    default = root / "dataset" / "sample_events.parquet"
+    return context["var"]["value"].get("predix_events_path", str(default))
+
+
 with DAG(
     dag_id            = "dag_02_feature_engineering",
     description       = "Predix — Build Gold feature tables from Silver events",
@@ -90,26 +97,22 @@ with DAG(
     def build_python_features(**context):
         import sys, logging
         from pathlib import Path
-        import pandas as pd
 
         log = logging.getLogger(__name__)
         root = Path(context["var"]["value"].get("predix_home", "."))
         sys.path.insert(0, str(root))
 
-        from pipeline.feature_store.feature_engineering import build_rfm, build_session_features
+        from pipeline.feature_store.feature_engineering import (
+            build_rfm,
+            build_session_features,
+            load_events,
+        )
 
-        data_dir = root / "dataset"
         out_dir  = root / "pipeline" / "scoring"
         out_dir.mkdir(parents=True, exist_ok=True)
 
         log.info("Loading data for feature engineering…")
-        oct_df = pd.read_csv(data_dir / "2019-Oct.csv", nrows=2_000_000)
-        nov_df = pd.read_csv(data_dir / "2019-Nov.csv", nrows=2_000_000)
-        df     = pd.concat([oct_df, nov_df], ignore_index=True)
-        df["event_time"]    = pd.to_datetime(df["event_time"], utc=True)
-        df["price"]         = pd.to_numeric(df["price"], errors="coerce").fillna(0)
-        df["brand"]         = df["brand"].fillna("unknown")
-        df["category_code"] = df["category_code"].fillna("")
+        df = load_events(_events_path(context, root))
 
         rfm = build_rfm(df)
         rfm.to_parquet(out_dir / "rfm.parquet", index=False)

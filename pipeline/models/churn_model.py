@@ -1,15 +1,18 @@
 """
 Predix — Churn Prediction Model
 ────────────────────────────────────────────────────────────────────────────────
-Binary classifier that predicts whether an October buyer will NOT purchase
-in November (churned=1, retained=0).
+Binary classifier that predicts whether a buyer will make no purchase in the
+N days following a cutoff date (churned=1, retained=0). The target and the
+point-in-time features are defined in `pipeline.feature_store.churn_dataset`.
 
 Three estimators are compared:
   1. Logistic Regression (baseline, interpretable)
   2. Random Forest       (ensemble, handles non-linearity)
-  3. Gradient Boosting   (best AUC in cross-validation)
+  3. Gradient Boosting   (boosted trees)
 
-The winning model (GB by default) is registered in MLflow Model Registry.
+The champion (GB by default, see ChurnModelConfig) is registered in the MLflow
+Model Registry. On the local sample the three estimators are within ~0.01
+ROC-AUC of each other; see reports/churn_metrics.json.
 ────────────────────────────────────────────────────────────────────────────────
 """
 
@@ -40,20 +43,11 @@ from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from pipeline.feature_store.churn_dataset import CHURN_FEATURE_COLS, build_churn_dataset
+
 log = logging.getLogger(__name__)
 
-FEATURE_COLS = [
-    "frequency",
-    "monetary",
-    "avg_price",
-    "recency",
-    "unique_cats",
-    "unique_brands",
-    "unique_prods",
-    "n_views",
-    "n_carts",
-    "cart_to_pur_ratio",
-]
+FEATURE_COLS = CHURN_FEATURE_COLS
 
 
 @dataclass
@@ -133,50 +127,15 @@ class ChurnModel:
     # ── Feature engineering ────────────────────────────────────────────────────
     @staticmethod
     def build_features(
-        oct_df: pd.DataFrame,
-        nov_df: pd.DataFrame,
+        events: pd.DataFrame,
+        as_of: pd.Timestamp | str,
+        horizon_days: int = 30,
+        lookback_days: int | None = None,
     ) -> pd.DataFrame:
-        """Return a feature DataFrame with `churned` label."""
-        pur = oct_df[oct_df["event_type"] == "purchase"].copy()
-        viw = oct_df[oct_df["event_type"] == "view"].copy()
-        crt = oct_df[oct_df["event_type"] == "cart"].copy()
-        ref = pd.Timestamp("2019-12-01", tz="UTC")
-
-        feat = (
-            pur.groupby("user_id")
-            .agg(
-                frequency     = ("event_time", "count"),
-                monetary      = ("price", "sum"),
-                avg_price     = ("price", "mean"),
-                recency       = ("event_time", lambda x: int((ref - x.max()).days)),
-                unique_cats   = ("category_code", "nunique"),
-                unique_brands = ("brand", "nunique"),
-                unique_prods  = ("product_id", "nunique"),
-            )
-            .reset_index()
+        """Return point-in-time features and the `churned` label for eligible users."""
+        return build_churn_dataset(
+            events, as_of, horizon_days=horizon_days, lookback_days=lookback_days
         )
-        feat = feat.merge(
-            viw.groupby("user_id").size().rename("n_views"), on="user_id", how="left"
-        )
-        feat = feat.merge(
-            crt.groupby("user_id").size().rename("n_carts"), on="user_id", how="left"
-        )
-        feat = feat.fillna(0)
-        feat["cart_to_pur_ratio"] = (
-            feat["n_carts"] / feat["frequency"].replace(0, np.nan)
-        ).fillna(0)
-
-        nov_buyers = set(
-            nov_df[nov_df["event_type"] == "purchase"]["user_id"].unique()
-        )
-        feat["churned"] = feat["user_id"].apply(lambda u: 1 if u not in nov_buyers else 0)
-
-        log.info(
-            "Features built: %d users | churn rate=%.1f%%",
-            len(feat),
-            feat["churned"].mean() * 100,
-        )
-        return feat
 
     # ── Train & evaluate ───────────────────────────────────────────────────────
     def fit(self, feat: pd.DataFrame) -> "ChurnModel":

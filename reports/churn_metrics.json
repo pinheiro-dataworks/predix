@@ -1,0 +1,55 @@
+{
+  "target": {
+    "as_of": "2019-11-01",
+    "horizon_days": 30,
+    "lookback_days": null,
+    "definition": "eligible = >=1 purchase before as_of; churned = no purchase in [as_of, as_of + horizon_days)"
+  },
+  "data": {
+    "source": "sample_events.parquet",
+    "events": 4045612,
+    "users": 197295,
+    "first_event": "2019-10-01 00:00:11+00:00",
+    "last_event": "2019-11-30 23:59:57+00:00"
+  },
+  "split": {
+    "test_size": 0.2,
+    "random_state": 42,
+    "stratified_by": "churned",
+    "n_users": 12691,
+    "n_train": 10152,
+    "n_test": 2539,
+    "churn_rate": 0.7342211015680403,
+    "churn_rate_test": 0.734147302087436
+  },
+  "models": [
+    {
+      "model": "Recency baseline",
+      "roc_auc": 0.5953,
+      "pr_auc": 0.7965,
+      "cv_roc_auc_mean": null,
+      "cv_roc_auc_std": null
+    },
+    {
+      "model": "Logistic Regression",
+      "roc_auc": 0.657,
+      "pr_auc": 0.8177,
+      "cv_roc_auc_mean": 0.6675,
+      "cv_roc_auc_std": 0.016
+    },
+    {
+      "model": "Random Forest",
+      "roc_auc": 0.6456,
+      "pr_auc": 0.8169,
+      "cv_roc_auc_mean": 0.6662,
+      "cv_roc_auc_std": 0.0169
+    },
+    {
+      "model": "Gradient Boosting",
+      "roc_auc": 0.6527,
+      "pr_auc": 0.8192,
+      "cv_roc_auc_mean": 0.6679,
+      "cv_roc_auc_std": 0.0152
+    }
+  ]
+}
