@@ -4,220 +4,220 @@
 
 <div align="center">
 
-**Predix** is an end-to-end Big Data & Machine Learning platform for e-commerce behavioral intelligence.  
-It predicts **churn**, scores **upsell/cross-sell opportunity**, and delivers **RFM segmentation** at scale.
+**Predix** is a churn prediction, upsell scoring and RFM segmentation project built on
+two months of e-commerce behavioural events.
 
-[![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat-square)](https://python.org)
-[![PySpark](https://img.shields.io/badge/PySpark-3.5-orange?style=flat-square)](https://spark.apache.org)
-[![MLflow](https://img.shields.io/badge/MLflow-2.10-blue?style=flat-square)](https://mlflow.org)
-[![Airflow](https://img.shields.io/badge/Airflow-2.8-red?style=flat-square)](https://airflow.apache.org)
-[![dbt](https://img.shields.io/badge/dbt-1.8-F97316?style=flat-square)](https://getdbt.com)
-[![Vercel](https://img.shields.io/badge/Dashboard-Vercel-black?style=flat-square)](https://vercel.com)
+[![CI](https://github.com/pinheiro-dataworks/predix/actions/workflows/ci.yml/badge.svg)](https://github.com/pinheiro-dataworks/predix/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue?style=flat-square)](https://python.org)
+[![scikit-learn](https://img.shields.io/badge/scikit--learn-1.4%2B-F7931E?style=flat-square)](https://scikit-learn.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?style=flat-square)](https://fastapi.tiangolo.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
 </div>
 
 ---
 
-## What Predix Delivers
+## Scope: what runs here and what is design
 
-| Business Question | Predix Output | Business Value |
+The repository contains two kinds of code. Keeping them apart is important when you read the numbers below.
+
+### Runs locally
+
+Everything in this section has been executed end to end on a **user-level sample of 4,045,612 events** (197,295 users, 3.7% of all users, every event of each sampled user for October and November 2019).
+
+| Component | Entry point | What it produces |
 |---|---|---|
-| Who will stop buying next month? | Churn probability score [0–1] per user | Retention campaigns before the loss |
-| Where is demand not converting? | Upsell opportunity score per category | Targeted promotions on high-gap categories |
-| Who are the most valuable customers? | RFM segment (Champions → Lost) | Personalised CRM playbooks |
-| Which categories are bought together? | Cross-sell affinity matrix | Bundle offers & recommendation widgets |
+| Sampling | `scripts/build_sample.py` | `dataset/sample_events.parquet` (deterministic hash of `user_id`) |
+| Churn target and features | `pipeline/feature_store/churn_dataset.py` | One row per eligible user, point-in-time features plus label |
+| Model evaluation | `scripts/evaluate_churn.py` | `reports/churn_metrics.json` |
+| Training and registry | `pipeline/models/train_and_register.py` | MLflow runs and registered champion (SQLite backend), churn, RFM and upsell score files |
+| Scoring API | `api/main.py` (FastAPI) | Serves the score files written by the training step |
+| Dashboard data | `scripts/generate_dashboard_data.py` | `dashboard/data/dashboard_data.json` |
+| Static dashboard | `dashboard/` | Plotly.js site, deployed on Vercel from `main` |
+| Tests and lint | `pytest`, `ruff` | Run in GitHub Actions on Python 3.11 and 3.12 |
+
+### Designed, not executed in this repo
+
+These parts describe how the pipeline would run in production. They are kept consistent with the local code (same churn definition, same feature names), but **none of them has been run in this repository**, and no performance or scale figure in this README comes from them.
+
+| Component | Location | Status |
+|---|---|---|
+| Airflow orchestration (4 DAGs) | `airflow/dags/` | Syntax-checked only; no Airflow deployment |
+| Snowflake + dbt medallion models | `dbt/models/` | Not compiled or run; no Snowflake account is involved |
+| PySpark ingestion to Delta Lake | `pipeline/ingestion/` | Not run; local processing uses pandas and pyarrow |
+| Full-dataset scale | — | The raw files hold 109,950,743 events (~14.7 GB). Models have only been trained on the ~4M-event sample |
+| Streaming, Kubernetes, feature store | `requirements-pipeline.txt` | Listed as target technologies only |
+
+---
+
+## Churn definition
+
+Churn is defined relative to a cutoff date `as_of` (default `2019-11-01`) and a prediction horizon of `N` days (default 30, configurable):
+
+```
+              observation window                    prediction window
+   ───────────────────────────────────────┼──────────────────────────────┤
+ 2019-10-01                             as_of                       as_of + N
+   features: only events before as_of     label: any purchase here?
+```
+
+- **Eligible population:** users with at least one purchase before `as_of`.
+- **Label:** `churned = 1` when an eligible user makes no purchase in `[as_of, as_of + N)`.
+- **Features (13):** recency, frequency, monetary, average price, distinct categories, brands and products, views, carts, cart-to-purchase ratio, sessions, active days, tenure. All are computed from events strictly before `as_of`.
+- **Guards:** `build_features` refuses any event at or after `as_of`. `build_churn_dataset` raises if the data ends before the prediction window does, because a truncated window would label active users as churned.
+
+`tests/test_temporal_integrity.py` removes, injects and edits post-cutoff events and requires every feature to be unchanged. Two deliberately injected leaks fail 17 and 10 of its 19 tests respectively.
+
+An earlier version read the first 2M rows of each monthly file. That covers only October 1–2 and November 1–2, so "churn" meant "bought on Oct 1–2 but not on Nov 1–2" and the reported churn rate was 95.3%.
+
+---
+
+## Results (local sample)
+
+`as_of = 2019-11-01`, `N = 30` days, stratified 80/20 split by user (`random_state = 42`). Source: [`reports/churn_metrics.json`](reports/churn_metrics.json).
+
+| | Value |
+|---|---|
+| Eligible users | 12,691 |
+| Churn rate | **73.4%** |
+| Train / test users | 10,152 / 2,539 |
+
+| Model | ROC-AUC (test) | PR-AUC (test) | 5-fold CV ROC-AUC (train) |
+|---|---|---|---|
+| Recency baseline (days since last purchase, no training) | 0.595 | 0.797 | — |
+| Logistic Regression | **0.657** | 0.818 | 0.668 ± 0.016 |
+| Random Forest | 0.646 | 0.817 | 0.666 ± 0.017 |
+| Gradient Boosting | 0.653 | **0.819** | 0.668 ± 0.015 |
+
+How to read this:
+
+- A random score has PR-AUC equal to the churn rate (0.734), not 0.5. The models add about 0.085 PR-AUC over random and about 0.02 over the recency baseline.
+- The three learned models are within cross-validation noise of each other. Gradient Boosting is registered as champion by configuration, not because it clearly wins.
+- The signal is modest. With only one month of history before the cutoff, 62% of eligible users have a single purchase, which limits what any model can learn.
 
 ---
 
 ## Architecture
 
+The diagram shows the target design. Solid boxes run locally; boxes marked *(design)* are described in the previous section.
+
 ```
-Raw Events (CSV / Kafka)
+Raw CSVs (Oct + Nov 2019, ~110M events)
     │
-    ▼
-PySpark Ingestion ──► Bronze Layer (Parquet / Delta)
+    ├──► scripts/build_sample.py ──► sample_events.parquet (~4M events)        [runs]
+    │         │
+    │         ├──► churn_dataset.py ──► evaluate_churn.py ──► churn_metrics.json  [runs]
+    │         ├──► train_and_register.py ──► MLflow (SQLite) + score files     [runs]
+    │         │         └──► FastAPI /api/v1/score/churn/{uid} …               [runs]
+    │         └──► generate_dashboard_data.py ──► static dashboard (Vercel)    [runs]
     │
-    ▼
-dbt Silver ──► events_cleaned, sessions, user_daily_agg
-    │
-    ▼
-dbt Gold ──► customer_rfm, churn_features, upsell_features   ◄── Snowflake MPP
-    │
-    ▼
-MLflow Experiments ──► Logistic Regression │ Random Forest │ Gradient Boosting
-    │                        ▼
-    │                  Model Registry (champion promotion)
-    ▼
-Batch Scoring (Airflow @daily) ──► churn_scores.parquet, upsell_scores.parquet
-    │
-    ├──► FastAPI  ─── /api/v1/score/churn/{uid}
-    │                 /api/v1/score/upsell/{uid}
-    │                 /api/v1/segment/{uid}
-    │
-    └──► Static Dashboard (Vercel) ──► Plotly.js charts, live filters, 3D scatter
+    └──► PySpark ingestion ──► dbt Bronze/Silver/Gold on Snowflake
+              └──► Airflow DAGs: features ─► training ─► daily batch scoring   (design)
 ```
 
----
+### Why these technologies
 
-## Tech Stack — Why Each Was Chosen
-
-### Apache Spark / PySpark
-**Why:** The dataset is 93M+ rows (~14 GB). At e-commerce scale (50–500M events/day), pandas locks up. PySpark distributes processing across a cluster, enabling the same code to run on 14 GB today or 14 TB tomorrow — zero architectural refactor needed.
-
-### Apache Airflow
-**Why:** ML pipelines need reliable scheduling, dependency management, and retry logic. Airflow's DAG model makes the full pipeline auditable and observable. Every run is logged, every failure is alertable, and backfills are trivial.
-
-### Snowflake + dbt
-**Why:** Snowflake is MPP (Massively Parallel Processing) — it separates compute from storage, scales automatically, and charges only for what you use. dbt adds software-engineering practices to SQL: version control, tests, documentation, and lineage. The Bronze → Silver → Gold medallion architecture ensures clean separation of concerns.
-
-### MLflow
-**Why:** Without experiment tracking, model development is irreproducible. MLflow logs every hyperparameter, metric, and artefact for all three models, enabling A/B comparison and one-click champion promotion via the Model Registry.
-
-### Gradient Boosting (XGBoost / sklearn GB)
-**Why:** GBM consistently outperforms Logistic Regression and Random Forest on tabular churn problems with class imbalance. It handles non-linear interactions between RFM features natively. The Random Forest serves as an ensemble baseline; Logistic Regression serves as the interpretable baseline for regulatory audits.
-
-### FastAPI
-**Why:** Async-native, Pydantic-validated, auto-documented. Serving batch scores in < 10ms via in-memory Parquet is sufficient for personalisation use cases without needing a real-time feature store at this scale.
-
-### Plotly.js + Vercel
-**Why:** The entire dashboard is pre-computed JSON + static HTML. There is no server to maintain — Vercel deploys it globally on a CDN in seconds. Plotly.js provides interactive 3D charts, heatmaps, ROC curves, and 3D RFM scatter out of the box without any server-side rendering.
-
----
-
-## Dashboard Tabs
-
-| Tab | Charts | Key Insight |
-|---|---|---|
-| **Overview** | Daily event volume (area), Funnel, Event split donut, Category revenue, Daily revenue | Executive pulse — what's happening in the store |
-| **Churn Intelligence** | Gauge, Cohort bar, RFM scatter, Segment bar, **3D RFM scatter** | Who is at risk and why |
-| **Products & Categories** | Treemap, Top brands, Grouped bar, Avg price, Conversion rate, Top-20 table | What sells, what doesn't |
-| **User Behavior** | Heatmap (hour×weekday), Hourly curve, Weekday bar, Session depth, Cumulative revenue, Ratio | When and how customers browse |
-| **ML Intelligence** | ROC curves (3 models), Feature importance, Churn score histogram, Affinity matrix, Upsell scores, Segment action table | Model validation and scoring outputs |
-| **Architecture** | Pipeline diagram, Tech stack chips, Model cards, Feature store schema, Airflow DAG specs, dbt layers | Full technical documentation embedded in the dashboard |
+- **pandas + pyarrow (local):** the 4M-event sample fits in memory. Streaming the raw CSVs with pyarrow builds the sample in about 80 seconds.
+- **scikit-learn:** logistic regression, random forest and gradient boosting, all wrapped in pipelines, with a recency baseline as the minimum bar.
+- **MLflow:** experiment tracking and model registry. A SQLite backend is used because MLflow 3 no longer accepts the `./mlruns` file store.
+- **FastAPI:** serves pre-computed batch scores from Parquet, with Pydantic response models.
+- **Plotly.js on a static site:** the dashboard is pre-computed JSON plus HTML, so there is no server to run.
+- **Airflow, dbt, Snowflake, PySpark (design):** the intended production stack for scheduling, SQL transformations with tests and lineage, and distributed processing of the full dataset.
 
 ---
 
 ## Quickstart
 
-### 1. Install dependencies
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Generate dashboard data
-```bash
-python scripts/generate_dashboard_data.py
-```
-This samples 2M rows per CSV, trains all ML models, and writes `dashboard/data/dashboard_data.json`.  
-Expected runtime: **3–8 minutes** depending on hardware.
-
-### 3. Open the dashboard locally
-```
-dashboard/index.html   ← open directly in browser (no server needed)
-```
-Or serve it:
-```bash
-cd dashboard && python -m http.server 3000
-# → http://localhost:3000
-```
-
-### 4. Deploy to Vercel
-```bash
-npm i -g vercel
-vercel --prod
-```
-Vercel reads `vercel.json` and serves the `dashboard/` directory globally.
-
----
-
-## Running the Full Pipeline (Production)
+Requires Python 3.11+ and the two raw CSVs from Kaggle in `dataset/` (see [Dataset](#dataset)).
 
 ```bash
-# 1. Start Airflow scheduler
-airflow scheduler &
-airflow webserver --port 8080 &
+pip install -r requirements-dev.txt
 
-# 2. Train and register models manually
-python pipeline/models/train_and_register.py \
-  --data-dir ./dataset \
-  --mlflow-uri ./mlruns
+# 1. Build the ~4M-event user-level sample (~80 s)
+python scripts/build_sample.py
 
-# 3. Start FastAPI server
-uvicorn api.main:app --reload --port 8000
+# 2. Evaluate the churn models against the baselines
+python scripts/evaluate_churn.py                    # as_of=2019-11-01, N=30
+python scripts/evaluate_churn.py --horizon-days 14  # any other horizon
 
-# 4. Check API
+# 3. Train, register the champion in MLflow and write score files
+python pipeline/models/train_and_register.py
+mlflow ui --backend-store-uri sqlite:///mlflow.db   # optional
+
+# 4. Serve the scores
+uvicorn api.main:app --port 8000
 curl http://localhost:8000/health
-curl http://localhost:8000/api/v1/metrics/overview
+
+# 5. Regenerate and validate the dashboard data
+python scripts/generate_dashboard_data.py
+python scripts/check_json.py
+cd dashboard && python -m http.server 3000          # http://localhost:3000
+
+# Tests and lint
+pytest
+ruff check .
 ```
 
 ---
 
-## Business Value & Scalability
+## Dashboard
 
-### Immediate ROI Levers
-- **Churn prevention**: Identifying the top 10% highest-churn-risk users enables targeted retention campaigns. Retaining even 5% of churners at an average order value of $125 generates measurable incremental revenue.
-- **Upsell conversion**: Categories with high opportunity scores (high views, low conversions) are ideal for flash promotions. A 1% lift in conversion rate on electronics alone represents significant revenue.
-- **Champion nurturing**: The Champions segment (top RFM) deserves a VIP loyalty programme — they have the highest LTV and the lowest churn risk.
-
-### How It Scales
-
-| Dimension | Today (demo) | Production at scale |
-|---|---|---|
-| Volume | 4M sampled events | 500M events/day → Spark auto-scales |
-| Storage | Local CSV | Snowflake + Delta Lake (petabyte-ready) |
-| Latency | Batch (daily) | Near-real-time with Kafka + Spark Streaming |
-| Models | 3 classifiers | Model ensemble + A/B testing via MLflow |
-| API | Single instance | Kubernetes HPA + load balancer |
-| Dashboard | Static JSON | Live Snowflake connector via dbt exposures |
+| Tab | Content |
+|---|---|
+| **Overview** | Daily events, funnel, event split, category and daily revenue |
+| **Churn Intelligence** | Churn rate with its definition, eligible and retained buyers, cohort before and after the cutoff, RFM maps |
+| **Products & Categories** | Revenue treemap, top brands, category funnel, conversion rates, top products |
+| **User Behavior** | Hour × weekday heatmap, hourly and weekday curves, session depth |
+| **ML Intelligence** | ROC curves on the holdout set (recency baseline and three models), ROC-AUC and PR-AUC, feature importance, score distribution, category affinity, upsell scores |
+| **Architecture** | Target pipeline design, model cards, feature store schema, DAG and dbt layer descriptions |
 
 ---
 
-## Project Structure
+## Project structure
 
 ```
 Predix/
-├── asset/                        ← Logos
-├── dataset/                      ← Raw CSVs (not versioned)
-├── dashboard/                    ← Static site → Vercel
-│   ├── index.html
-│   ├── js/app.js
-│   ├── assets/
-│   └── data/dashboard_data.json  ← Generated by scripts/
-├── scripts/
-│   └── generate_dashboard_data.py
+├── .github/workflows/ci.yml      ← ruff + pytest (Python 3.11 / 3.12)
+├── api/main.py                   ← FastAPI scoring service
+├── dashboard/                    ← static site (Vercel)
+├── dataset/                      ← raw CSVs and sample (not versioned)
 ├── pipeline/
-│   ├── ingestion/pyspark_ingestion.py
-│   ├── feature_store/feature_engineering.py
-│   ├── models/churn_model.py
-│   ├── models/upsell_model.py
-│   ├── models/train_and_register.py
-│   └── scoring/batch_scoring.py
-├── airflow/dags/
-│   ├── dag_01_ingestion.py
-│   ├── dag_02_feature_engineering.py
-│   ├── dag_03_model_training.py
-│   └── dag_04_batch_scoring.py
-├── dbt/models/
-│   ├── bronze/raw_events.sql
-│   ├── silver/events_cleaned.sql
-│   └── gold/customer_rfm.sql / churn_features.sql / upsell_features.sql
-├── api/main.py                   ← FastAPI scoring server
-├── vercel.json
-├── requirements.txt
-├── requirements-pipeline.txt
-└── .gitignore
+│   ├── feature_store/
+│   │   ├── churn_dataset.py      ← churn target + point-in-time features
+│   │   └── feature_engineering.py← event cleaning, RFM, user/product/session tables
+│   ├── models/
+│   │   ├── churn_evaluation.py   ← baselines vs models, ROC-AUC / PR-AUC
+│   │   ├── churn_model.py        ← MLflow-tracked training and registration
+│   │   ├── upsell_model.py       ← rule-based opportunity + affinity scores
+│   │   └── train_and_register.py ← local training entrypoint
+│   ├── scoring/batch_scoring.py
+│   └── ingestion/                ← PySpark ingestion (design)
+├── airflow/dags/                 ← orchestration (design)
+├── dbt/models/                   ← Snowflake medallion models (design)
+├── reports/churn_metrics.json    ← versioned evaluation results
+├── scripts/                      ← sampling, evaluation, dashboard export
+└── tests/                        ← temporal integrity, API contract, transformations
 ```
+
+---
+
+## Limitations
+
+- **One cutoff, two months of data.** Results come from a single `as_of`. A rolling, out-of-time evaluation would need a longer history.
+- **Sample, not full data.** All metrics are from 3.7% of users. The full 110M-event dataset has not been processed.
+- **Churn risk tiers** in the API use fixed probability thresholds (0.35 / 0.60). With a 73% base rate, most users fall into the High tier, so the thresholds should be recalibrated before any campaign use.
+- **Upsell scoring is rule-based** (view/purchase gap, co-purchase affinity, RFM weight). It is not a trained model and has no offline evaluation.
 
 ---
 
 ## Dataset
 
-**Source:** [Kaggle — eCommerce behavior data from multi category store](https://www.kaggle.com/datasets/mkechinov/ecommerce-behavior-data-from-multi-category-store)  
-**Period:** October–November 2019 | **Raw size:** ~14 GB | **Rows:** ~93 million  
+**Source:** [Kaggle — eCommerce behavior data from multi category store](https://www.kaggle.com/datasets/mkechinov/ecommerce-behavior-data-from-multi-category-store)
+**Files used:** `2019-Oct.csv` (42,448,764 events) and `2019-Nov.csv` (67,501,979 events), ~14.7 GB in total.
 **Schema:** `event_time, event_type, product_id, category_id, category_code, brand, price, user_id, user_session`
 
 ---
 
-<div align="center">
-Built as a high-impact international portfolio project · Stack: PySpark · Airflow · Snowflake · dbt · MLflow · FastAPI · Plotly.js · Vercel
-</div>
+## License
+
+[MIT](LICENSE) © Renan Pinheiro
