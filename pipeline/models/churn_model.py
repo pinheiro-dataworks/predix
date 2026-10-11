@@ -20,8 +20,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
 
 import mlflow
 import mlflow.sklearn
@@ -31,7 +29,6 @@ from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
-    auc,
     average_precision_score,
     f1_score,
     precision_score,
@@ -138,7 +135,7 @@ class ChurnModel:
         )
 
     # ── Train & evaluate ───────────────────────────────────────────────────────
-    def fit(self, feat: pd.DataFrame) -> "ChurnModel":
+    def fit(self, feat: pd.DataFrame) -> ChurnModel:
         X = feat[FEATURE_COLS].values
         y = feat["churned"].values
 
@@ -186,7 +183,10 @@ class ChurnModel:
 
                 # MLflow logging
                 params = pipe.named_steps["clf"].get_params()
-                mlflow.log_params({k: v for k, v in params.items() if isinstance(v, (int, float, str, bool))})
+                mlflow.log_params({
+                    k: v for k, v in params.items()
+                    if isinstance(v, (int, float, str, bool))
+                })
                 mlflow.log_metrics({
                     "auc_roc":     result.auc_roc,
                     "auc_pr":      result.auc_pr,
@@ -226,7 +226,10 @@ class ChurnModel:
             )
             run_id = mlflow.active_run().info.run_id
 
-        log.info("Champion '%s' registered as '%s'", self.cfg.champion_model, self.cfg.registered_name)
+        log.info(
+            "Champion '%s' registered as '%s'",
+            self.cfg.champion_model, self.cfg.registered_name,
+        )
         return run_id
 
     # ── Predict ────────────────────────────────────────────────────────────────

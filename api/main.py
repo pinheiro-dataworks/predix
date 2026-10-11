@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Header, status
+from fastapi import FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -113,7 +113,9 @@ def health() -> dict:
 def get_churn_score(user_id: int) -> ChurnScore:
     df = _store.get("churn", pd.DataFrame())
     if df.empty:
-        raise HTTPException(status_code=503, detail="Churn scores not loaded. Run batch scoring first.")
+        raise HTTPException(
+            status_code=503, detail="Churn scores not loaded. Run batch scoring first."
+        )
 
     row = df[df["user_id"] == user_id]
     if row.empty:

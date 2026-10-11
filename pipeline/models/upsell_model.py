@@ -49,7 +49,9 @@ class UpsellModel:
     def compute_category_scores(self, df: pd.DataFrame) -> pd.DataFrame:
         """Compute aggregate opportunity score per category."""
         views     = df[df["event_type"] == "view"].groupby("category").size().rename("views")
-        purchases = df[df["event_type"] == "purchase"].groupby("category").size().rename("purchases")
+        purchases = (
+            df[df["event_type"] == "purchase"].groupby("category").size().rename("purchases")
+        )
 
         scores = pd.concat([views, purchases], axis=1).fillna(0)
         scores = scores[scores["views"] >= self.cfg.min_views]
@@ -95,7 +97,9 @@ class UpsellModel:
     ) -> pd.DataFrame:
         """Score each user for the top-K upsell categories."""
         if self.category_scores_ is None or self.affinity_matrix_ is None:
-            raise RuntimeError("Call compute_category_scores() and compute_affinity_matrix() first.")
+            raise RuntimeError(
+                "Call compute_category_scores() and compute_affinity_matrix() first."
+            )
 
         pur = df[df["event_type"] == "purchase"]
 
@@ -161,7 +165,7 @@ class UpsellModel:
         return user_scores
 
     # ── Fit (all in one) ───────────────────────────────────────────────────────
-    def fit(self, df: pd.DataFrame, rfm: pd.DataFrame) -> "UpsellModel":
+    def fit(self, df: pd.DataFrame, rfm: pd.DataFrame) -> UpsellModel:
         self.compute_category_scores(df)
         self.compute_affinity_matrix(df)
         self.compute_user_scores(df, rfm)
@@ -176,7 +180,9 @@ class UpsellModel:
             })
             mlflow.log_metrics({
                 "n_categories_scored": len(self.category_scores_),
-                "n_user_recs":         len(self.user_scores_) if self.user_scores_ is not None else 0,
+                "n_user_recs":         (
+                    len(self.user_scores_) if self.user_scores_ is not None else 0
+                ),
             })
             mlflow.set_tags({
                 "model_type": "rule_based_upsell",
