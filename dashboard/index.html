@@ -526,25 +526,25 @@
           <div class="kpi-icon red">⚡</div>
           <div class="kpi-value" id="ch-rate" style="color:var(--red)">—</div>
           <div class="kpi-label">Churn Rate</div>
-          <div class="kpi-delta neg">Oct buyers lost in Nov</div>
+          <div class="kpi-delta neg" id="ch-rate-def">No purchase in the window after cutoff</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon amber">🛍️</div>
-          <div class="kpi-value" id="ch-oct">—</div>
-          <div class="kpi-label">Oct Buyers</div>
-          <div class="kpi-delta pos">Cohort baseline</div>
+          <div class="kpi-value" id="ch-eligible">—</div>
+          <div class="kpi-label">Eligible Buyers</div>
+          <div class="kpi-delta pos" id="ch-eligible-def">Bought before cutoff</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon green">✅</div>
           <div class="kpi-value" id="ch-retained">—</div>
           <div class="kpi-label">Retained</div>
-          <div class="kpi-delta pos">Bought in both months</div>
+          <div class="kpi-delta pos">Bought again within the window</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon blue">🆕</div>
           <div class="kpi-value" id="ch-new">—</div>
-          <div class="kpi-label">New Nov Buyers</div>
-          <div class="kpi-delta pos">First-time purchasers</div>
+          <div class="kpi-label">New Buyers</div>
+          <div class="kpi-delta pos">First purchase inside the window</div>
         </div>
       </div>
 
@@ -554,7 +554,7 @@
           <div id="chart-churn-gauge" class="chart-wrap"></div>
         </div>
         <div class="card">
-          <div class="card-title">Customer Cohort — Oct vs Nov</div>
+          <div class="card-title">Customer Cohort — Before vs After Cutoff</div>
           <div id="chart-cohort" class="chart-wrap"></div>
         </div>
       </div>
@@ -668,30 +668,36 @@
 
     <!-- ═══ ML INTELLIGENCE ════════════════════════════════════════════════════ -->
     <div id="tab-ml" class="tab-panel">
-      <div class="grid grid-3">
+      <div class="grid grid-4">
         <div class="kpi-card">
-          <div class="kpi-icon green">🎯</div>
-          <div class="kpi-value" id="ml-gb-auc" style="color:var(--green)">—</div>
-          <div class="kpi-label">Gradient Boosting AUC</div>
-          <div class="kpi-delta pos">Best performing model</div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-icon blue">🌲</div>
-          <div class="kpi-value" id="ml-rf-auc" style="color:var(--blue)">—</div>
-          <div class="kpi-label">Random Forest AUC</div>
-          <div class="kpi-delta pos">Ensemble model</div>
+          <div class="kpi-icon amber">⏱️</div>
+          <div class="kpi-value" id="ml-rec-auc" style="color:var(--amber)">—</div>
+          <div class="kpi-label">Recency Baseline ROC-AUC</div>
+          <div class="kpi-delta" id="ml-rec-pr">Days since last purchase as score</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon purple">📊</div>
           <div class="kpi-value" id="ml-lr-auc" style="color:var(--acc2)">—</div>
-          <div class="kpi-label">Logistic Regression AUC</div>
-          <div class="kpi-delta pos">Baseline model</div>
+          <div class="kpi-label">Logistic Regression ROC-AUC</div>
+          <div class="kpi-delta" id="ml-lr-pr">Linear baseline</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon blue">🌲</div>
+          <div class="kpi-value" id="ml-rf-auc" style="color:var(--blue)">—</div>
+          <div class="kpi-label">Random Forest ROC-AUC</div>
+          <div class="kpi-delta" id="ml-rf-pr">Ensemble model</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon green">🎯</div>
+          <div class="kpi-value" id="ml-gb-auc" style="color:var(--green)">—</div>
+          <div class="kpi-label">Gradient Boosting ROC-AUC</div>
+          <div class="kpi-delta" id="ml-gb-pr">Boosted trees</div>
         </div>
       </div>
 
       <div class="grid grid-2">
         <div class="card">
-          <div class="card-title">ROC Curves — 3 Models</div>
+          <div class="card-title">ROC Curves — Holdout Set</div>
           <div id="chart-roc" class="chart-wrap-lg"></div>
         </div>
         <div class="card">
@@ -702,7 +708,7 @@
 
       <div class="grid grid-2">
         <div class="card">
-          <div class="card-title">Churn Score Distribution (Gradient Boosting)</div>
+          <div class="card-title">Churn Score Distribution (Gradient Boosting, holdout)</div>
           <div id="chart-churn-scores" class="chart-wrap"></div>
         </div>
         <div class="card">
@@ -823,11 +829,11 @@
           <dl>
             <dt>Algorithm</dt><dd>Gradient Boosting Classifier</dd>
             <dt>Task</dt><dd>Binary Classification (churn / retain)</dd>
-            <dt>Training data</dt><dd>October 2019 buyer cohort</dd>
-            <dt>Features</dt><dd>frequency, monetary, recency, unique_cats, unique_brands, cart_to_pur_ratio + 4 more</dd>
-            <dt>Imbalance</dt><dd>class_weight="balanced" + stratified split</dd>
+            <dt>Target</dt><dd>Buyer before as_of = 2019-11-01 with no purchase in the next 30 days</dd>
+            <dt>Features</dt><dd>13 point-in-time features (recency, frequency, monetary, sessions, tenure, …) from events before as_of only</dd>
+            <dt>Evaluation</dt><dd>Stratified 80/20 user holdout; ROC-AUC and PR-AUC vs recency baseline</dd>
             <dt>Tracking</dt><dd>MLflow — experiment: predix_churn_v1</dd>
-            <dt>Limitations</dt><dd>2-month window; non-subscription e-commerce; 95% base churn expected</dd>
+            <dt>Limitations</dt><dd>Single cutoff on two months of data; ~4M-event user sample; modest lift over baselines</dd>
           </dl>
         </div>
         <div class="card model-card">

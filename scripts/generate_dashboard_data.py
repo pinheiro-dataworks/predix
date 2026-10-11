@@ -1,46 +1,51 @@
 #!/usr/bin/env python3
 """
 Predix - generate_dashboard_data.py
-Pre-computes all chart data from raw CSVs, trains ML models, and exports
-dashboard/data/dashboard_data.json for the Vercel-hosted frontend.
+Pre-computes all chart data from the local event sample, evaluates the churn
+models, and exports dashboard/data/dashboard_data.json for the static frontend.
 
 Usage (from project root):
     pip install -r requirements.txt
+    python scripts/build_sample.py
     python scripts/generate_dashboard_data.py
 """
 
 from __future__ import annotations
 
 import json
+import sys
 import warnings
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import auc, roc_curve
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from pipeline.feature_store.churn_dataset import (  # noqa: E402
+    CHURN_FEATURE_COLS,
+    build_churn_dataset,
+)
+from pipeline.feature_store.feature_engineering import (  # noqa: E402
+    prepare_events,
+    score_quantiles,
+)
+from pipeline.models.churn_evaluation import evaluate_churn_models  # noqa: E402
 
 warnings.filterwarnings("ignore")
 
-ROOT = Path(__file__).parent.parent
-DATA_DIR = ROOT / "dataset"
+SAMPLE_PATH = ROOT / "dataset" / "sample_events.parquet"
 OUT_DIR = ROOT / "dashboard" / "data"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-SAMPLE_ROWS = 2_000_000
+AS_OF = pd.Timestamp("2019-11-01", tz="UTC")
+HORIZON_DAYS = 30
 REF_DATE = pd.Timestamp("2019-12-01", tz="UTC")
 RFM_SCATTER_CAP = 5_000
 RFM_3D_CAP = 3_000
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-FEATURE_COLS = [
-    "frequency", "monetary", "avg_price", "recency",
-    "unique_cats", "unique_brands", "unique_prods",
-    "n_views", "n_carts", "cart_to_pur_ratio",
-]
 
 
 def sf(x) -> float:
@@ -72,24 +77,11 @@ def safe_list(it) -> list:
 
 print(">> Loading data...")
 
-oct_raw = pd.read_csv(DATA_DIR / "2019-Oct.csv", nrows=SAMPLE_ROWS)
-nov_raw = pd.read_csv(DATA_DIR / "2019-Nov.csv", nrows=SAMPLE_ROWS)
-oct_raw["month"] = "october"
-nov_raw["month"] = "november"
-
-df = pd.concat([oct_raw, nov_raw], ignore_index=True)
-df["event_time"] = pd.to_datetime(df["event_time"], utc=True)
+df = prepare_events(pd.read_parquet(SAMPLE_PATH))
+df["month"]    = np.where(df["event_time"].dt.month == 10, "october", "november")
 df["date"]     = df["event_time"].dt.strftime("%Y-%m-%d")
 df["hour"]     = df["event_time"].dt.hour.astype(int)
 df["weekday"]  = df["event_time"].dt.day_name()
-df["price"]    = pd.to_numeric(df["price"], errors="coerce").fillna(0.0)
-df["brand"]    = df["brand"].fillna("unknown")
-df["category_code"] = df["category_code"].fillna("")
-df["category"] = (
-    df["category_code"].str.split(".").str[0]
-    .replace("", "unknown")
-    .fillna("unknown")
-)
 
 total_rows  = len(df)
 total_users = df["user_id"].nunique()
@@ -179,25 +171,30 @@ overview_out = {m: build_overview(f) for m, f in frames.items()}
 # CHURN INTELLIGENCE
 print(">> Computing churn analysis...")
 
-oct_buyers = set(
-    frames["october"][frames["october"]["event_type"] == "purchase"]["user_id"].unique()
-)
-nov_buyers = set(
-    frames["november"][frames["november"]["event_type"] == "purchase"]["user_id"].unique()
-)
+# Target: eligible = bought before AS_OF; churned = no purchase in the next
+# HORIZON_DAYS. Features only see events before AS_OF.
+churn_ds = build_churn_dataset(df, AS_OF, horizon_days=HORIZON_DAYS)
+eligible = set(churn_ds["user_id"])
+churned  = set(churn_ds.loc[churn_ds["churned"] == 1, "user_id"])
+retained = eligible - churned
 
-retained   = oct_buyers & nov_buyers
-churned    = oct_buyers - nov_buyers
-new_buyers = nov_buyers - oct_buyers
+horizon_end = AS_OF + pd.Timedelta(days=HORIZON_DAYS)
+window_buyers = set(df.loc[
+    (df["event_type"] == "purchase")
+    & (df["event_time"] >= AS_OF)
+    & (df["event_time"] < horizon_end),
+    "user_id",
+])
+new_buyers = window_buyers - eligible
 
-churn_rate = sf(len(churned) / max(len(oct_buyers), 1) * 100)
+churn_rate = sf(len(churned) / max(len(eligible), 1) * 100)
 
 cohort = {
-    "categories": ["October Buyers", "November"],
-    "retained":   [len(retained), 0],
+    "categories": ["Buyers before cutoff", f"Buyers in next {HORIZON_DAYS} days"],
+    "retained":   [len(retained), len(retained)],
     "churned":    [len(churned), 0],
     "new":        [0, len(new_buyers)],
-    "totals":     [len(oct_buyers), len(nov_buyers)],
+    "totals":     [len(eligible), len(window_buyers)],
 }
 
 pur_all = df[df["event_type"] == "purchase"].copy()
@@ -214,20 +211,10 @@ rfm = (
 rfm = rfm[rfm["monetary"] > 0].copy()
 
 
-def _qcut_robust(series: pd.Series, q: int, ascending: bool = True) -> pd.Series:
-    """Percentile-rank based scoring. Returns integer scores 1..q.
-    Handles duplicates naturally — no bin-edge issues."""
-    pct = series.rank(pct=True, method="average", na_option="keep")
-    score = np.ceil(pct * q).clip(1, q).fillna(q // 2 + 1).astype(int)
-    if not ascending:
-        score = (q + 1) - score
-    return score
-
-
 def add_rfm_scores(df_rfm: pd.DataFrame) -> pd.DataFrame:
-    df_rfm["r_score"] = _qcut_robust(df_rfm["recency"],   5, ascending=False)
-    df_rfm["f_score"] = _qcut_robust(df_rfm["frequency"], 5, ascending=True)
-    df_rfm["m_score"] = _qcut_robust(df_rfm["monetary"],  5, ascending=True)
+    df_rfm["r_score"] = score_quantiles(df_rfm["recency"],   5, ascending=False)
+    df_rfm["f_score"] = score_quantiles(df_rfm["frequency"], 5, ascending=True)
+    df_rfm["m_score"] = score_quantiles(df_rfm["monetary"],  5, ascending=True)
     df_rfm["rfm_score"] = df_rfm["r_score"] + df_rfm["f_score"] + df_rfm["m_score"]
     return df_rfm
 
@@ -286,12 +273,14 @@ rfm_3d_out = {
 }
 
 churn_out = {
-    "churn_rate":  churn_rate,
-    "oct_buyers":  len(oct_buyers),
-    "nov_buyers":  len(nov_buyers),
-    "retained":    len(retained),
-    "churned":     len(churned),
-    "new_buyers":  len(new_buyers),
+    "churn_rate":    churn_rate,
+    "as_of":         AS_OF.strftime("%Y-%m-%d"),
+    "horizon_days":  HORIZON_DAYS,
+    "eligible":      len(eligible),
+    "window_buyers": len(window_buyers),
+    "retained":      len(retained),
+    "churned":       len(churned),
+    "new_buyers":    len(new_buyers),
     "cohort":      cohort,
     "rfm_map":     rfm_map,
     "segments":    segments,
@@ -486,79 +475,25 @@ behavior_out = {m: build_behavior(f) for m, f in frames.items()}
 # ML INTELLIGENCE
 print(">> Training ML models...")
 
-oct_pur = frames["october"][frames["october"]["event_type"] == "purchase"]
-oct_viw = frames["october"][frames["october"]["event_type"] == "view"]
-oct_crt = frames["october"][frames["october"]["event_type"] == "cart"]
-nov_pur = frames["november"][frames["november"]["event_type"] == "purchase"]
-
-feat = (
-    oct_pur.groupby("user_id")
-    .agg(
-        frequency     = ("event_time", "count"),
-        monetary      = ("price", "sum"),
-        avg_price     = ("price", "mean"),
-        recency       = ("event_time", lambda x: int((REF_DATE - x.max()).days)),
-        unique_cats   = ("category", "nunique"),
-        unique_brands = ("brand", "nunique"),
-        unique_prods  = ("product_id", "nunique"),
-    )
-    .reset_index()
-)
-
-n_views_oct = oct_viw.groupby("user_id").size().rename("n_views")
-n_carts_oct = oct_crt.groupby("user_id").size().rename("n_carts")
-
-feat = feat.merge(n_views_oct, on="user_id", how="left")
-feat = feat.merge(n_carts_oct, on="user_id", how="left")
-feat = feat.fillna(0)
-feat["cart_to_pur_ratio"] = feat["n_carts"] / feat["frequency"].replace(0, np.nan)
-feat = feat.fillna(0)
-
-nov_set = set(nov_pur["user_id"].unique())
-feat["churned"] = feat["user_id"].apply(lambda u: 1 if u not in nov_set else 0)
-
-X = feat[FEATURE_COLS].values
-y = feat["churned"].values
-
-scaler = StandardScaler()
-X_sc   = scaler.fit_transform(X)
-X_tr, X_te, y_tr, y_te = train_test_split(
-    X_sc, y, test_size=0.2, random_state=42, stratify=y
-)
-
-classifiers = {
-    "Logistic Regression": LogisticRegression(
-        max_iter=1000, class_weight="balanced", random_state=42
-    ),
-    "Random Forest": RandomForestClassifier(
-        n_estimators=100, max_depth=6, class_weight="balanced",
-        random_state=42, n_jobs=-1
-    ),
-    "Gradient Boosting": GradientBoostingClassifier(
-        n_estimators=100, max_depth=4, random_state=42
-    ),
-}
+results, fitted, split = evaluate_churn_models(churn_ds)
 
 roc_curves_out = {}
 model_auc      = {}
-
-for name, clf in classifiers.items():
-    print(f"   Training {name}...")
-    clf.fit(X_tr, y_tr)
-    prob = clf.predict_proba(X_te)[:, 1]
-    fpr, tpr, _ = roc_curve(y_te, prob)
-    auc_val = sf(auc(fpr, tpr))
-    model_auc[name]      = auc_val
-    roc_curves_out[name] = {
-        "fpr": safe_list(fpr),
-        "tpr": safe_list(tpr),
-        "auc": auc_val,
+model_pr_auc   = {}
+for r in results:
+    model_auc[r.name]    = sf(r.roc_auc)
+    model_pr_auc[r.name] = sf(r.pr_auc)
+    roc_curves_out[r.name] = {
+        "fpr":    safe_list(r.fpr),
+        "tpr":    safe_list(r.tpr),
+        "auc":    sf(r.roc_auc),
+        "pr_auc": sf(r.pr_auc),
     }
-    print(f"   {name} AUC = {auc_val:.4f}")
+    print(f"   {r.name:<20} ROC-AUC = {r.roc_auc:.4f} | PR-AUC = {r.pr_auc:.4f}")
 
-rf_clf = classifiers["Random Forest"]
+rf_clf = fitted["Random Forest"][-1]
 fi_pairs = sorted(
-    zip(FEATURE_COLS, rf_clf.feature_importances_),
+    zip(CHURN_FEATURE_COLS, rf_clf.feature_importances_, strict=True),
     key=lambda x: x[1], reverse=True
 )
 feature_importance = {
@@ -566,8 +501,8 @@ feature_importance = {
     "importances": safe_list([v for _, v in fi_pairs]),
 }
 
-gb_clf    = classifiers["Gradient Boosting"]
-gb_scores = gb_clf.predict_proba(scaler.transform(X))[:, 1]
+# Score distribution on the holdout only, so it reflects unseen users.
+gb_scores = next(r.test_scores for r in results if r.name == "Gradient Boosting")
 hist_vals, hist_bins = np.histogram(gb_scores, bins=20, range=(0, 1))
 churn_scores_out = {
     "bins":   safe_list(hist_bins[:-1]),
@@ -645,9 +580,12 @@ ml_out = {
     "upsell":             upsell_out,
     "segment_scores":     segment_scores_out,
     "model_auc":          model_auc,
+    "model_pr_auc":       model_pr_auc,
+    "split":              split,
     "gb_auc":             model_auc.get("Gradient Boosting", 0),
     "rf_auc":             model_auc.get("Random Forest", 0),
     "lr_auc":             model_auc.get("Logistic Regression", 0),
+    "recency_auc":        model_auc.get("Recency baseline", 0),
 }
 
 categories_list = sorted(
@@ -659,12 +597,13 @@ print(">> Saving dashboard_data.json...")
 
 dashboard_data = {
     "metadata": {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
-        "sample_rows":  SAMPLE_ROWS,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "sample":       "user-level sample (scripts/build_sample.py)",
         "total_events": total_rows,
         "total_users":  si(total_users),
-        "date_range":   ["2019-10-01", "2019-11-30"],
+        "date_range":   [df["date"].min(), df["date"].max()],
         "model_auc":    model_auc,
+        "model_pr_auc": model_pr_auc,
     },
     "filters": {
         "months":     ["all", "october", "november"],
@@ -686,4 +625,3 @@ print(f"OK  Saved -> {out_file}")
 print(f"    File size : {size_mb:.2f} MB")
 print(f"    Churn rate: {churn_out['churn_rate']:.1f}%")
 print(f"    GB AUC    : {model_auc.get('Gradient Boosting', 0):.4f}")
-print("    Deploy the dashboard/ directory to Vercel.")

@@ -304,16 +304,18 @@ function renderChurn() {
   const ch = DATA.churn;
 
   document.getElementById('ch-rate').textContent     = fmtPct(ch.churn_rate);
-  document.getElementById('ch-oct').textContent      = fmtNum(ch.oct_buyers);
+  document.getElementById('ch-rate-def').textContent =
+    `No purchase in the ${ch.horizon_days} days after ${ch.as_of}`;
+  document.getElementById('ch-eligible').textContent = fmtNum(ch.eligible);
+  document.getElementById('ch-eligible-def').textContent = `Bought before ${ch.as_of}`;
   document.getElementById('ch-retained').textContent = fmtNum(ch.retained);
   document.getElementById('ch-new').textContent      = fmtNum(ch.new_buyers);
 
   // Gauge
   Plotly.newPlot('chart-churn-gauge', [{
-    type: 'indicator', mode: 'gauge+number+delta',
+    type: 'indicator', mode: 'gauge+number',
     value: ch.churn_rate,
     number: { suffix: '%', font: { size: 36, color: C.red } },
-    delta: { reference: 70, increasing: { color: C.red }, decreasing: { color: C.green } },
     gauge: {
       axis: { range: [0, 100], tickcolor: C.txt3, tickfont: { color: C.txt3 } },
       bar: { color: C.red, thickness: 0.6 },
@@ -655,14 +657,25 @@ function renderBehavior() {
 function renderML() {
   const ml = DATA.ml;
 
-  // AUC KPI cards
-  document.getElementById('ml-gb-auc').textContent = ml.gb_auc.toFixed(4);
-  document.getElementById('ml-rf-auc').textContent = ml.rf_auc.toFixed(4);
-  document.getElementById('ml-lr-auc').textContent = ml.lr_auc.toFixed(4);
+  // AUC KPI cards: ROC-AUC as the headline, PR-AUC against the churn base rate
+  const base = (ml.split.churn_rate_test * 100).toFixed(1);
+  [
+    ['rec', 'Recency baseline'],
+    ['lr',  'Logistic Regression'],
+    ['rf',  'Random Forest'],
+    ['gb',  'Gradient Boosting'],
+  ].forEach(([key, name]) => {
+    document.getElementById(`ml-${key}-auc`).textContent = ml.model_auc[name].toFixed(4);
+    document.getElementById(`ml-${key}-pr`).textContent  =
+      `PR-AUC ${ml.model_pr_auc[name].toFixed(4)} (base rate ${base}%)`;
+  });
 
   // ROC Curves
   const roc = ml.roc_curves;
-  const rocColors = { 'Gradient Boosting': C.green, 'Random Forest': C.acc2, 'Logistic Regression': C.blue };
+  const rocColors = {
+    'Gradient Boosting': C.green, 'Random Forest': C.blue,
+    'Logistic Regression': C.acc2, 'Recency baseline': C.amber,
+  };
   const rocTraces = Object.keys(roc).map(name => ({
     x: roc[name].fpr, y: roc[name].tpr,
     type: 'scatter', mode: 'lines', name: `${name} (AUC=${roc[name].auc.toFixed(3)})`,
@@ -786,7 +799,7 @@ function renderArchitecture() {
   if (!DATA) return;
   const auc = DATA.ml.gb_auc;
   const el  = document.getElementById('arch-gb-auc');
-  if (el) el.textContent = auc.toFixed(4) + ' AUC';
+  if (el) el.textContent = auc.toFixed(4) + ' ROC-AUC';
 }
 
 // ── Utility ───────────────────────────────────────────────────────────────────
