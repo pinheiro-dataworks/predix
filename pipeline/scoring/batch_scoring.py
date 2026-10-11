@@ -17,14 +17,18 @@ from pathlib import Path
 import mlflow.sklearn
 import pandas as pd
 
+from pipeline.feature_store.churn_dataset import CHURN_FEATURE_COLS
+
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-CHURN_FEATURE_COLS = [
-    "frequency", "monetary", "avg_price", "recency",
-    "unique_cats", "unique_brands", "unique_prods",
-    "n_views", "n_carts", "cart_to_pur_ratio",
-]
+RISK_BINS = [0, 0.35, 0.60, 1.0]
+RISK_LABELS = ["Low", "Medium", "High"]
+
+
+def assign_churn_risk(scores: pd.Series) -> pd.Series:
+    """Map churn probabilities to Low / Medium / High tiers."""
+    return pd.cut(scores, bins=RISK_BINS, labels=RISK_LABELS, include_lowest=True).astype(str)
 
 
 def load_champion(model_name: str, stage: str = "Production") -> object:
@@ -58,12 +62,7 @@ def score_churn(
             feat[c] = 0
 
     feat["churn_score"]  = model.predict_proba(feat[CHURN_FEATURE_COLS].values)[:, 1]
-    feat["churn_risk"]   = pd.cut(
-        feat["churn_score"],
-        bins=[0, 0.35, 0.60, 1.0],
-        labels=["Low", "Medium", "High"],
-        include_lowest=True,
-    )
+    feat["churn_risk"]   = assign_churn_risk(feat["churn_score"])
     feat["scored_at"] = pd.Timestamp.utcnow()
 
     out = Path(output_path)
@@ -113,5 +112,5 @@ if __name__ == "__main__":
     p.add_argument("--output-dir",      default="./pipeline/scoring/output")
     p.add_argument("--churn-model",     default="predix_churn_model")
     p.add_argument("--stage",           default="Production")
-    p.add_argument("--mlflow-uri",      default="./mlruns")
+    p.add_argument("--mlflow-uri",      default="sqlite:///mlflow.db")
     main(p.parse_args())
